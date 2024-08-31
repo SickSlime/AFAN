@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Simple Notation Explorer</title>
+<meta charset="UTF-8">
+<meta name="author" content="ccz181078">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body onload="init()">
+<label>
+Notation:
+<select id="notation">
+</select>
+</label>
+
+<label>
+Style:
+<select id="style">
+<option selected>Simplified</option>
+<option>Sequence</option>
+<option>Raw</option>
+</select>
+</label>
+
+<label>
+Indent:
+<select id="indent">
+<option selected>FS Path</option>
+<option>White-Space</option>
+<option>None</option>
+</select>
+</label>
+<br/>
+
+<button id="rnd_expand">
+Random Expand
+</button>
+
+<p id="main"></p>
+<noscript>This page cannot run without JavaScript.</noscript>
+<script>
+
+let simplified = true
+let sequence = false
+let indent = 0
+let expand_no_dup = true
+
+let iter = (f,n,x) => {
+	for (let i=0;i<n;++i) x=f(x)
+	return x
+}
+
+let matrix_to_str = (a) => {
+	let n = a.length
+	let m = 0
+	for(let i=0;i<n;++i)m=Math.max(m,a[i].length)
+	let res = []
+	for(let j=0;j<m;++j){
+		res.push('<mtr>'+a.map(x=>'<mtd>'+(x.length<=j?'':x[j])+'</mtd>').join('')+'</mtr>')
+	}
+	return '<math><mtable>'+res.join('')+'</mtable></math>'
+}
+
+let str_sup = (s) => ('<sup>'+s+'</sup>')
+let str_sub = (s) => ('<sub>'+s+'</sub>')
+let str_mult = (s,n) => {
+	ss = []
+	iter(()=>ss.push(s),n)
+	return ss.join('')
+}
+let list_mult = (s,n) => {
+	ss = []
+	iter(()=>ss.push(...s),n)
+	return ss
+}
+
+let error = () => {
+	throw 'error'
+}
+
+let zero = {
+	type: 'zero',
+	cf: '0',
+	FS: (n) => error(),
+	to_str: () => '0',
+}
+
+let one = {
+	type: 'one',
+	cf: '1',
+	FS: (n) => zero,
+	to_str: () => '1',
+}
+
+let oadd = (a,b) => {
+	if (a.cf === '0') return b // 0+b = b
+	if (b.cf === '0') return a // a+0 = a
+	if (a.type === 'oadd') return oadd(a.args[0],oadd(a.args[1],b)) // (a+b)+c = a+(b+c)
+	return {
+		type: 'oadd',
+		args: [a,b],
+		cf: b.cf,
+		FS: (n) => oadd(a,b.FS(n)), // (a+b)[n] = a+(b[n])
+		to_str: () => (a.to_str()+'+'+b.to_str()),
+	}
+}
+
+let oadd_parenthesis = (a) => {
+	let s = a.to_str()
+	if (a.type === 'oadd') s = '('+s+')'
+	return s
+}
+
+let omult = (a,b) => {
+	if (a.type === 'one') return b // 1*b = b
+	if (b.type === 'one') return a // a*1 = a
+	if (a.cf === '0' || b.cf === '0') return zero // 0*b = 0   a*0 = 0
+	if (a.type === 'omult') return omult(a.args[0],omult(a.args[1],b)) // (a*b)*c = a*(b*c)
+	let s = {
+		type: 'omult',
+		args: [a,b],
+		to_str: () => (oadd_parenthesis(a)+'×'+oadd_parenthesis(b)),
+	}
+	if (b.cf === '1') {
+		let s0 = oadd(omult(a,b.FS(0)),a) // a*(b+1) = a*b+a
+		s.cf = s0.cf
+		s.FS = s0.FS
+	} else { // cf(b)>1
+		s.cf = b.cf
+		s.FS = (n) => omult(a,b.FS(n)) // (a*b)[n] = a*(b[n])
+	}
+	return s
+}
+
+let suc = (a) => oadd(a,one)
+
+let nat_to_Ord = (n) => {
+	if (n === 0) return zero
+	if (n === 1) return one
+	return {
+		type: 'nat_to_Ord',
+		args: [n],
+		cf: '1',
+		FS: (m) => nat_to_Ord(n-1),
+		to_str: () => ''+n,
+	}
+}
+
+let w = {
+	type: 'w',
+	cf: 'w',
+	FS: (n) => nat_to_Ord(n+1),
+	to_str: () => 'ω',
+}
+
+let opow = (a,b) => {
+	if (a.type === 'one' || b.cf === '0') return one // 1^b = 1   a^0 = 1
+	if (a.cf === '0') return zero // 0^b = 0 (b>0)
+	let s = {
+		type: 'opow',
+		args: [a,b],
+		to_str: () => (a.to_str()+(b.type === 'one' ? '' : str_sup(b.to_str()))),
+	}
+	if (b.cf === '1') {
+		let s0 = omult(opow(a,b.FS(0)),a) // a^(b+1) = (a^b)*a
+		s.cf = s0.cf
+		s.FS = s0.FS
+	} else { // cf(b)>1
+		s.cf = b.cf
+		s.FS = (n) => opow(a,b.FS(n)) // (a^b)[n] = a^(b[n])
+	}
+	return s
+}
+
+let opow_tower_w = (c) => {
+	return (n) => iter((x) => opow(c,x), n, c)
+}
+
+let eps = (a) => {
+	if (a.type === 'W') return a
+	let s = {
+		type: 'eps',
+		args: [a],
+		to_str: () => 'ε'+str_sub(a.to_str()),
+	}
+	if (a.cf === '0' || a.cf === '1'){
+		s.cf = 'w'
+		let c = (a.cf === '1' ? eps(a.FS(0)) : w)
+		s.FS = opow_tower_w(c)
+	} else {
+		s.cf = a.cf
+		s.FS = (n) => eps(a.FS(n))
+	}
+	return s
+}
+
+let Ord_to_nat = (a) => {
+	if (a === undefined) return -1
+	if (a.cf === '0') return 0
+	if (a.type === 'one') return 1
+	if (a.type === 'nat_to_Ord') return a.args[0]
+	return -1
+}
+
+let odiv_l = (a,b) => {
+	let a_str = a.to_str()
+	if (a_str === b.to_str()) return one
+	if (b.type === 'omult' && a_str === b.args[0].to_str()) return b.args[1]
+	return undefined
+}
+
+let phi_to_str_seq = (a) => {
+	if (a.type === 'phi') {
+		let a = a.args[0]
+		let b = a.args[1]
+		let c = a.args[2]
+	}
+}
+
+// b-th (fixpoint)^a after c
+let phi = (a,b,c) => {
+	if (a.cf === '0' && b.cf === '0' && c.cf === '0') return one // φ(0,0) = 1
+	if (b.cf === '0' && c.cf !== '0') return c
+	let s = {
+		type: 'phi',
+		args: [a,b,c],
+		to_str: () => {
+			if (sequence) {
+				let f = (x) => x.to_str()
+				return (c.cf === '0' ? '' : f(c))+'('+f(a)+','+f(b)+')'
+			}
+			let c_str = c.to_str()
+			let b_str = b.to_str()
+			let k = Ord_to_nat(odiv_l(c,b))
+			if (k >= 1) b_str = omult(c,nat_to_Ord(1+k)).to_str()
+			else if (b.type === 'oadd'){
+				k = Ord_to_nat(odiv_l(c,b.args[0]))
+				if (k >= 1) b_str = oadd(omult(c,nat_to_Ord(1+k)),b.args[1]).to_str()
+			}
+			let s = ((c.cf === '0' || k>=1 || b.type === 'phi' && b.args[2].to_str() === c_str) ? '' : c_str+'+')+b_str
+			if (simplified) {
+				let a0 = Ord_to_nat(a)
+				if (a0 === 0) return 'ω'+(s === '1' ? '' : str_sup(s))
+				if (a0 === 1) return 'ε'+str_sub(s)
+				if (a0 === 2) return 'ζ'+str_sub(s)
+				if (a0 === 3) return 'η'+str_sub(s)
+			}
+			return ('φ'+str_sub(a.to_str())+'('+s+')')
+		}
+	}
+	if (b.cf === '0' || b.cf === '1'){
+		if (a.cf === '0'){
+			let s0 = omult(phi(a,b.FS(0),c),w) // φ(0,b+1) = φ(0,b)*w
+			s.cf = s0.cf
+			s.FS = s0.FS
+		}else{
+			let c0 = (b.cf === '1' ? phi(a,b.FS(0),c) : zero)
+			let c1 = (b.cf === '1' ? one : zero)
+			if (a.cf === '1'){
+				s.cf = 'w'
+				s.FS = (n) => iter((x)=>phi(a.FS(0),x,c0), n+1, c1)
+				// φ(a+1,0)[n] = (λx.φ(a,x))^(n+1)(0)
+				// φ(a+1,b+1)[n] = (λx.φ(a,φ(a+1,b)+x))^(n+1)(φ(a+1,b)+1)
+			}else{ // cf(a)>1
+				s.cf = a.cf
+				s.FS = (n) => phi(a.FS(n),c1,c0)
+				// φ(a,0)[n] = φ(a[n],0)
+				// φ(a,b+1)[n] = φ(a[n],φ(a,b)+1)
+			}
+		}
+	}else{ // cf(b)>1
+		s.cf = b.cf
+		s.FS = (n) => phi(a,b.FS(n),c) // φ(a,b)[n] = φ(a,b[n])
+	}
+	return s
+}
+
+let Gamma0 = {
+	type: 'Gamma0',
+	cf: 'w',
+	FS: (n) => iter(x=>phi(x,zero,zero), n+1, zero),
+	to_str: () => 'Γ'+str_sub('0'),
+}
+
+let W = {
+	type: 'W',
+	cf: 'W',
+	FS: (n) => n,
+	to_str: () => 'Ω',
+}
+
+let Mpsi = (a) => {
+	let s = {
+		type: 'Mpsi',
+		args: [a],
+		to_str: () => 'ψ('+(a.to_str())+')',
+	}
+	if (a.cf === '0' || a.cf === '1') {
+		s.cf = 'w'
+		s.FS = opow_tower_w(a.cf === '1' ? Mpsi(a.FS(0)) : w)
+	}else if (a.cf === 'w') {
+		s.cf = a.cf
+		s.FS = (n) => Mpsi(a.FS(n))
+	}else if (a.cf === 'W') {
+		s.cf = 'w'
+		s.FS = (n) => iter((x)=>Mpsi(a.FS(x)), n+1, one)
+	}else error()
+	return s
+}
+
+let BMS_to_str_hydra = (expr) => {
+	let n=expr.length
+	let zs=[]
+	for(let i=0;i<n;++i){
+		if(expr[i][0]===expr[0][0]){
+			zs.push(i)
+		}
+	}
+	let n0=zs.length
+	zs.push(n)
+	let str=''
+	for(let i=0;i<n0;++i){
+		let l=zs[i],r=zs[i+1]
+		if(i)str+='+'
+		let w=expr[l++]
+		w=w.slice(1,w.length)
+		while(w.length>0 && w.at(-1)===0)w.pop()
+		str+='p'+(w.length>0 ? str_sub(w.join(',')) : '')
+		if(l<r){
+			str+='('+BMS_to_str_hydra(expr.slice(l,r))+')'
+		}
+	}
+	return str
+}
+
+let BMS_to_seq = (a) => {
+	let b = list_mult([BigInt(1)], a.length)
+	for (let j=a[0].length-1;j>=0;--j) {
+		for (let i=0;i<a.length;++i) {
+			let f = a[i][j]
+			if (f >= 0) b[i] += b[f]
+		}
+	}
+	return b
+}
+
+let BMS = (a) => {
+	let s = {
+		type: 'BMS',
+		args: a,
+		to_str: () => {
+			if (sequence) return BMS_to_seq(a).join(',')
+			let b = []
+			for(let i=0;i<a.length;++i){
+				b.push([])
+				for(let j=0;j<a[i].length;++j){
+					b[i][j] = (a[i][j] === -1 ? 0 : b[a[i][j]][j]+1)
+				}
+			}
+			if (simplified) return BMS_to_str_hydra(b)
+			for(let i=0;i<b.length;++i){
+				while(b[i].length>1 && b[i].at(-1)==0) b[i].pop()
+			}
+			return matrix_to_str(b)
+		}
+	}
+	if (a.length === 0){
+		s.cf = '0'
+		s.FS = (n) => error()
+		s.to_str = () => '0'
+	}else{
+		let x = a.at(-1)
+		let nz = x.length-1
+		while (nz >= 0 && x[nz] === -1) --nz
+		if (nz < 0){
+			s.cf = '1'
+			s.FS = (n) => BMS(a.slice(0,a.length-1))
+		}else{
+			let BR = x[nz]
+			s.cf = 'w'
+			s.FS = (n) => {
+				let G = a.slice(0,BR)
+				let B = a.slice(BR,a.length-1)
+				for(let m=0;m<=n;++m){
+					G = G.concat(B)
+					for(let i=0;i<B.length;++i){
+						B[i] = B[i].slice()
+						for(let j=0;j<B[i].length;++j){
+							if(B[i][j]>=BR){
+								B[i][j] += B.length
+							}else if(m===0&&i===0&&j<nz){
+								B[i][j] = x[j]
+							}
+						}
+					}
+				}
+				return BMS(G)
+			}
+		}
+	}
+	return s
+}
+
+let shift_FS = (a) => {
+	let f = a.FS
+	a.FS = (m) => f(m+1)
+	return a
+}
+
+let BMS_Limit = {
+	type: 'BMS_Limit',
+	cf: 'w',
+	FS: (n) => shift_FS(BMS([list_mult([-1],n+1),list_mult([0],n+1)])),
+	to_str: () => 'Limit of BMS',
+}
+
+let LPrSS_to_str_hydra = (a) => {
+	let s = [-1]
+	let ss = []
+	for (let i=0;i<=a.length;++i){
+		while (s.length>0 && s.at(-1)>=(i===a.length?0:a[i])) {
+			s.pop()
+			if (ss.length>0 && ss.at(-1)==='('){
+				ss.pop()
+				if (ss.length>1 && ss.at(-2)==='×') {
+					ss.pop()
+					ss.pop()
+				} else {
+					ss.pop()
+					ss.push('1')
+				}
+			}else ss.push(')')
+		}
+		if (i===a.length) break
+		if (ss.length>0 && ss.at(-1)!=='(') ss.push('+')
+		let k = a[i]-s.at(-1)-1
+		if(!(s.at(-1)===-1||k===0)){
+			ss.push('Ω')
+			if(k!==1)ss.push(str_sup(k))
+			ss.push('×')
+		}
+		ss.push('p')
+		ss.push('(')
+		s.push(a[i])
+	}
+	return ss.join('')
+}
+
+let LPrSS = (a) => {
+	let s = {
+		type: 'LPrSS',
+		args: [a],
+		to_str: () => simplified ? LPrSS_to_str_hydra(a) : a.join(','), 
+	}
+	if (a.length === 0) {
+		s.cf = '0'
+		s.FS = (n) => error()
+	} else if (a.at(-1) === 1) {
+		s.cf = '1'
+		s.FS = (n) => LPrSS(a.slice(0,a.length-1))
+	} else {
+		let BR = a.length-2
+		while (a[BR]>=a.at(-1)) --BR
+		s.cf = 'w'
+		s.FS = (n) => {
+			let G = a.slice(0,BR)
+			let B = a.slice(BR,a.length-1)
+			let d = a.at(-1)-1-a[BR]
+			for(let m=0;m<=n;++m){
+				G = G.concat(B)
+				for(let i=0;i<B.length;++i)B[i]+=d
+			}
+			return LPrSS(G)
+		}
+	}
+	return s
+}
+
+let LPrSS_Limit = {
+	type: 'LPrSS_Limit',
+	cf: 'w',
+	FS: (n) => shift_FS(LPrSS([1,2+n])),
+	to_str: () => 'Limit of LPrSS',
+}
+
+let PrSS_Limit = {
+	type: 'PrSS_Limit',
+	cf: 'w',
+	FS: (n) => LPrSS([1,3]).FS(n),
+	to_str: () => 'Limit of PrSS',
+}
+
+let LPrSS_psi_to_seq = (k,x,seq) => {
+	if (x.type === 'LPrSS_psi') {
+		seq.push([k,x.args[0]])
+		LPrSS_psi_to_seq(k+1,x.args[1],seq)
+	} else if (x.type === 'oadd') {
+		for(let i=0;i<2;++i)LPrSS_psi_to_seq(k,x.args[i],seq)
+	} else if (x.type === 'omult') {
+		let m = Ord_to_nat(x.args[1])
+		for(let i=0;i<m;++i)LPrSS_psi_to_seq(k,x.args[0],seq)
+	} else if (x.type === 'one') {
+		seq.push([k,0])
+	} else if (x.cf === '0') {
+		;
+	} else error()
+}
+
+let LPrSS_psi = (a,b) => {
+	let s = {
+		type: 'LPrSS_psi',
+		args: [a,b],
+		to_str: () => {
+			if (!simplified) {
+				let seq = []
+				LPrSS_psi_to_seq(0,s,seq)
+				return matrix_to_str(seq)
+			}
+			return ('p'+str_sub(a)+(simplified && b.cf === '0' ? '' : '('+b.to_str()+')'))
+		}
+	}
+	if (b.cf === '0') {
+		if(a === 0) {
+			s.cf = '1'
+			s.FS = (n) => zero
+		} else {
+			s.cf = s
+			s.FS = (n) => n
+		}
+	}else if (b.cf === '1') {
+		let s0 = omult(LPrSS_psi(a,b.FS(0)),w)
+		s.cf = s0.cf
+		s.FS = s0.FS
+	}else if (b.cf === 'w' || b.cf.type === 'LPrSS_psi' && b.cf.args[0] <= a) {
+		s.cf = b.cf
+		s.FS = (n) => LPrSS_psi(a,b.FS(n))
+	}else if (b.cf.type === 'LPrSS_psi'){
+		let d = b.cf.args[0]-(a+1)
+		let BR = a
+		let lift = (a) => {
+			if (a.type === 'LPrSS_psi') {
+				if (a.args[0] <= BR) return a
+				return LPrSS_psi(a.args[0]+d,lift(a.args[1]))
+			}
+			if (a.type === 'oadd') return oadd(lift(a.args[0]),lift(a.args[1]))
+			if (a.type === 'omult') return omult(lift(a.args[0]),a.args[1])
+			return a
+		}
+		s.cf = 'w'
+		s.FS = (n) => iter((x)=>LPrSS_psi(a,b.FS(LPrSS_psi(x.args[0]+d,lift(x.args[1])))), n, LPrSS_psi(a,b.FS(zero)))
+	}else error()
+	return s
+}
+
+let LPrSS_psi_Limit = {
+	type: 'LPrSS_psi_Limit',
+	cf: 'w',
+	FS: (n) => shift_FS(LPrSS_psi(0,LPrSS_psi(1+n,zero))),
+	to_str: () => 'Limit of LPrSS ψ',
+}
+
+let PSSpsi_Limit = {
+	type: 'PSSpsi_Limit',
+	cf: 'w',
+	FS: (n) => LPrSS_psi(0,LPrSS_psi(2,zero)).FS(n),
+	to_str: () => 'Limit of PSS',
+}
+
+let ExWeakBOCF = (a,b) => {
+	let cmp = (x,y) => {
+		let x0 = (x.cf === '0')
+		let y0 = (y.cf === '0')
+		if (x0&&y0) return 0
+		if (x0) return -1
+		if (y0) return +1
+		for (let i=0;i<2;++i) {
+			let res = cmp(x.args[0],y.args[0])
+			if (res) return res
+		}
+		return 0
+	}
+	let s = {
+		type: 'ExWeakBOCF',
+		args: [a,b],
+	}
+	if (b.cf === '0') {
+		if (a.cf === '0') {
+			s.cf = '1'
+			s.FS = (n) => zero
+		} else if (a.cf === '1') {
+			s.cf = s
+			s.FS = (n) => n
+		} else {
+			s.cf = a.cf
+			s.FS = (n) => ExWeakBOCF(a.FS(n), zero)
+		}
+	} else if (b.cf === '1' || b.cf === 'w' || b.cf.type === 'ExWeakBOCF' && cmp(b.cf.args[0],a)<=0) {
+		s.cf = b.cf
+		s.FS = (n) => ExWeakBOCF(a,b.FS(n))
+	} else if (b.cf.type === 'ExWeakBOCF') {
+		let c = b.cf.args[0].FS(0)
+		s.cf = 'w'
+		s.FS = (n) => ExWeakBOCF(a,iter(x=>b.FS(ExWeakBOCF(c,x)),n+1,zero))
+	} else error()
+	
+	s.to_str = () => {
+		if (sequence) {
+			let x = s
+			let xs = []
+			while (x.type === 'ExWeakBOCF') {
+				xs.push(x.args[0].to_str())
+				x = x.args[1]
+			}
+			if (x.cf !== '0') error()
+			return '['+xs.join(',')+']'
+		}
+		if (!simplified) return 'ψ'+str_sub(s.args[0].to_str())+('('+s.args[1].to_str()+')')
+		let x = s
+		let k = 0
+		while (x.cf === '1') {
+			x = x.FS(0)
+			k += 1
+		}
+		if (x.cf === '0') return ''+k
+		let a = x.args[0]
+		let b = x.args[1]
+		return (b.cf==='0'?'Ω':'ψ')
+			+ str_sub(a.to_str())
+			+ (b.cf === '0' ? '' : '('+b.to_str()+')')
+			+ (k === 0 ? '' : '+'+k)
+	}
+	return s
+}
+
+let ExWeakBOCF_limit = {
+	type: 'ExWeakBOCF_limit',
+	cf: 'w',
+	FS: (n) => ExWeakBOCF(zero,iter(x=>ExWeakBOCF(x,zero),n+1,zero)),
+	to_str: () => 'Limit',
+}
+
+let w_sep = (k,a) => {
+	let s = {
+		type: 'w_sep',
+		args: [k,a],
+		to_str: () => a.map(x=>x.cf === '0' ? '' : x.to_str()).join('('+k+')'),
+	}
+	
+	if (a.length === 1) return a[0]
+	
+	if (k === 0) {
+		s.cf = '1'
+		if (a.length === 2) {
+			s.FS = (n) => zero
+		} else {
+			s.FS = (n) => w_sep(0,list_mult([zero],a.length-1))
+		}
+		return s
+	}
+	
+	for(let i=0;i<a.length;++i){
+		if (a[i].cf === '0') continue
+		if (a[i].cf === '1' && i !== 0) {
+			s.cf = 'w'
+			s.FS = (n) => {
+				let a0 = a.slice()
+				a0[i] = a[i].FS(0)
+				a0[i-1] = w_sep(k-1,list_mult([zero],n+1))
+				return w_sep(k,a0)
+			}
+		} else {
+			s.cf = a[i].cf
+			s.FS = (n) => {
+				let a0 = a.slice()
+				a0[i] = a[i].FS(n)
+				return w_sep(k,a0)
+			}
+		}
+		return s
+	}
+	s.cf = 'w'
+	s.FS = (n) => {
+		let a0 = a.slice(1,a.length)
+		a0[a0.length-1] = w_sep(k-1,list_mult([zero],n+1))
+		return w_sep(k,a0)
+	}
+	return s
+}
+
+let counter = (a) => {
+	let s = {
+		type: 'counter',
+		args: [a],
+		to_str: () => a.slice().reverse().join(','),
+	}
+	if (a.length === 0) {
+		s.cf = '0'
+		s.FS = (n) => error()
+	} else {
+		let p = 0
+		while (p<a.length && a[p]===0) ++p
+		s.cf = (p>0 ? 'w' : '1')
+		s.FS = (n) => {
+			let a0 = a.slice()
+			a0[p] -= 1
+			if (p>0) a0[p-1] = n+1
+			while (a0.length>0 && a0.at(-1)===0) a0.pop()
+			return counter(a0)
+		}
+	}
+	return s
+}
+
+
+
+let nat_cmp = (x,y) => {
+	if (!(typeof x === 'number')) error()
+	if (!(typeof y === 'number')) error()
+	return (x<y?-1:x>y?1:0)
+}
+
+let replace_last = (a,x) => {
+	a = a.slice()
+	a[a.length-1] = x
+	return a
+}
+
+let oadds = (a) => {
+	while (a.length > 0 && a.at(-1).cf === '0') a.pop()
+	if (a.length === 0) return zero
+	if (a.at(-1).type === 'oadds') {
+		let x = a.at(-1).args[0]
+		a.pop()
+		a = a.concat(x)
+	}
+	return {
+		type: 'oadds',
+		args: [a],
+		cf: a.at(-1).cf,
+		FS: (n) => oadds(replace_last(a,a.at(-1).FS(n))),
+		to_str: () => {
+			let xs = a.map(x=>x.to_str())
+			if (simplified) {
+				let res = []
+				for(let i=0,j;i<xs.length;i=j){
+					for(j=i+1;j<xs.length && xs[j]===xs[j-1];++j);
+					if (a[i].cf === '1' && a[i].FS(0).cf === '0') res.push(''+(j-i))
+					else res.push(xs[i]+(j>i+1 ? '×'+(j-i) : ''))
+				}
+				xs = res
+			}
+			return xs.join('+')
+		},
+	}
+}
+
+let p_2dp = (a,b) => {
+	let cmp = (x,y) => {
+		if (x.cf === '0' && y.cf === '0') return 0
+		if (x.cf === '0') return -1
+		if (y.cf === '0') return +1
+		if (x.type === 'p_2dp' && y.type === 'p_2dp') {
+			let res = nat_cmp(x.args[0],y.args[0])
+			if (res) return res
+			return cmp(x.args[1],y.args[1])
+		}
+		if (x.type === 'oadds' && y.type === 'oadds') {
+			let x0 = x.args[0]
+			let y0 = y.args[0]
+			let n = Math.min(x0.length,y0.length)
+			for (let i=0;i<n;++i) {
+				let res = cmp(x0[i],y0[i])
+				if (res) return res
+			}
+			return nat_cmp(x0.length,y0.length)
+		}
+		error()
+	}
+	let s = {
+		type: 'p_2dp',
+		args: [a,b],
+		to_str: () => {
+			if (sequence) {
+				let res = []
+				let f = (k,x) => {
+					if (x.type === 'p_2dp') {
+						res.push([k,x.args[0]])
+						f(k+1,x.args[1])
+					} else if (x.type === 'oadds') {
+						for(let i=0;i<x.args[0].length;++i)f(k,x.args[0][i])
+					} else if (x.cf !== '0') error()
+				}
+				f(0,s)
+				return matrix_to_str(res)
+			}
+			let ret = 
+			  (simplified && b.cf === '0' ? (a===0?'1':'M'+str_sub(a)) : 'p'+str_sub(a))
+			+ (simplified && b.cf === '0' ? '' : '('+b.to_str()+')')
+			return ret
+		},
+	}
+	if (b.cf === '0') {
+		if (a === 0) {
+			s.cf = '1'
+			s.FS = (n) => zero
+		} else {
+			s.cf = s
+			s.FS = (n) => n
+		}
+	} else if (b.cf === '1') {
+		s.cf = 'w'
+		s.FS = (n) => oadds(list_mult([p_2dp(a,b.FS(0))],n+1))
+	} else if (b.cf === 'w') {
+		s.cf = b.cf
+		s.FS = (n) => p_2dp(a,b.FS(n))
+	} else if (b.cf.type === 'p_2dp') {
+		if (b.cf.args[0] <= a) {
+			if (cmp(b.cf,s) <= 0) {
+				s.cf = b.cf
+				s.FS = (n) => p_2dp(a,b.FS(n))
+			} else {
+				let find = (x) => {
+					if (x.type === 'oadds') {
+						let x0 = x.args[0]
+						if (x0.length === 0) error()
+						let y = find(x0.at(-1))
+						return [z=>oadds(replace_last(x0,y[0](z))), y[1]]
+					}
+					if (x.type === 'p_2dp') {
+						if (x.args[0] > a) {
+							let y = find(x.args[1])
+							return [z=>p_2dp(x.args[0],y[0](z)), y[1]]
+						}
+						if (x.args[0] === a) return [z=>z, x]
+						error()
+					}
+					error()
+				}
+				let b0 = find(b)
+				s.cf = 'w'
+				s.FS = (n) => p_2dp(a,b0[0](iter(x=>b0[1].FS(p_2dp(a,b.cf.args[1].FS(x))),n+1,zero)))
+			}
+		} else if (b.cf.args[0] === a+1 && b.cf.args[1].cf === '0') {
+			s.cf = s
+			s.FS = (n) => n
+		} else error()
+	}
+	return s
+}
+
+let p_2dp_Limit = {
+	type: 'p_2dp_Limit',
+	cf: 'w',
+	FS: (n) => {
+		let x = oadds([zero])
+		for(let i=n;i>=0;--i) x = oadds([p_2dp(i,oadds([p_2dp(i+1,x)]))])
+		return p_2dp(0,x)
+	},
+	to_str: () => 'Limit',
+}
+
+
+
+let sizeof = (a) => {
+	let s=1
+	if(a.args)for(let i=0;i<a.args.length;++i) s+=sizeof(a.args[i])
+	return s
+}
+
+let data = []
+
+function fold(i){
+	if(!(0<=i && i<data.length)) error()
+	let p = i+1
+	while(p<data.length && data[p].path.length > data[i].path.length)++p
+	if (i+1<p){
+		data.splice(i+1, p-(i+1))
+		data[i].cur = 0
+		update()
+	}
+}
+
+function expand(i){
+	if(!(0<=i && i<data.length)) error()
+	let x = data[i].expr
+	let x0 = (i+1<data.length ? data[i+1].expr.to_str() : '')
+	if (x.cf === '0') return
+	if (x.cf === '1' || x.cf === 'w') {
+		for(;;){
+			if (x.cf === '1' && data[i].cur>0) return
+			let k = data[i].cur++
+			let y = x.FS(k)
+			if (expand_no_dup && y.to_str() === x0) {
+				if (k>0) error()
+				continue
+			}
+			data.splice(i+1,0,{
+				expr: y,
+				cur: 0,
+				path: data[i].path.concat([k]),
+			})
+			update()
+			return
+		}
+	}else error()
+}
+
+function update(){
+	res = []
+	for(let i=0;i<data.length;++i){
+		let s = ''
+		if (indent === 0) s = data[i].path.join(',')+'&nbsp;&nbsp;'
+		if (indent === 1) s = str_mult('&nbsp;',data[i].path.length)
+		res.push(s+'<button id=btn'+i+'>'+data[i].expr.to_str()+'</button>')
+	}
+	document.getElementById("main").innerHTML = res.join('<br/>')
+	for(let i=0;i<data.length;++i){
+		let btn = document.getElementById("btn"+i)
+		btn.onclick = (e) => {
+			e.preventDefault()
+			expand(i)
+		}
+		btn.oncontextmenu = (e) => {
+			e.preventDefault()
+			fold(i)
+		}
+	}
+}
+
+let notation_list = [
+	{
+		name: "Counter (ω^ω)",
+		data: {
+			type: 'counter_Limit',
+			cf: 'w',
+			FS: (n) => (counter(list_mult([0],n+1).concat([1]))),
+			to_str: () => 'Limit',
+		}
+	},
+	{
+		name: 'Nested Counter (ω^ω^ω)',
+		data: {
+			type: 'w_sep_Limit',
+			cf: 'w',
+			FS: (n) => shift_FS(w_sep(n,[zero,zero])),
+			to_str: () => 'Limit',
+		}
+	},
+	{
+		name: 'PrSS',
+		data: PrSS_Limit,
+	},
+	{
+		name: "ζ0",
+		data: {
+			type: 'zeta0',
+			cf: 'w',
+			FS: (n) => iter(eps,n+1,zero),
+			to_str: () => 'ζ'+str_sub('0'),
+		}
+	},
+	{
+		name: 'LPrSS',
+		data: LPrSS_Limit,
+	},
+	{
+		name: "binary Veblen function (Γ0)",
+		data: Gamma0,
+	},
+	{
+		name: "Madore's ψ (BHO)",
+		data: Mpsi(eps(suc(W))),
+	},
+	{
+		name: "PSS (BO)",
+		data: PSSpsi_Limit,
+	},
+	{
+		name: "Extended Weak Buchholz's ψ (EBO)",
+		data: ExWeakBOCF_limit,
+	},
+	{
+		name: "2-dropping ψ",
+		data: p_2dp_Limit,
+	},
+	{
+		name: "LPrSS ψ",
+		data: LPrSS_psi_Limit,
+	},
+	{
+		name: "Bashicu Matrix",
+		data: BMS_Limit,
+	}
+]
+
+function on_change_notation(){
+	let i = document.getElementById("notation").options.selectedIndex
+	data = [{
+		expr: notation_list[i].data,
+		cur: 0,
+		path: [],
+	}]
+	update()
+}
+
+function init(){
+	options = []
+	for(let i=0;i<notation_list.length;++i){
+		let x = notation_list[i]
+		options.push('<option '+(i==0?' selected':'')+'>'+x.name+'</option>')
+	}
+	document.getElementById("notation").innerHTML = options.join('')
+	document.getElementById("notation").onchange = (e) => on_change_notation()
+	document.getElementById("style").onchange = (e) => {
+		let idx = document.getElementById("style").options.selectedIndex
+		simplified = (idx === 0)
+		sequence = (idx === 1)
+		update()
+	}
+	document.getElementById("indent").onchange = (e) => {
+		indent = (document.getElementById("indent").options.selectedIndex)
+		update()
+	}
+	document.getElementById("rnd_expand").onclick = (e) => {
+		let n = data.length+10
+		for (let T=0;T<100&&data.length<n;++T) {
+			let i = Math.floor(Math.random()*data.length)
+			if (i<data.length && Math.random() < 2./(data[i].cur+2)*(3./(data[i].path.length+3))) expand(i)
+		}
+	}
+	on_change_notation()
+}
+
+</script>
+
+</body>
+</html>
